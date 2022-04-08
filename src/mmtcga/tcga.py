@@ -17,6 +17,8 @@ import requests
 import tempfile
 import os
 import json
+import subprocess
+from .util import wrap
 
 __author__ = "Marco Mernberger"
 __copyright__ = "Copyright (c) 2020 Marco Mernberger"
@@ -76,11 +78,92 @@ class TCGAProject:
     CASES_ENDPT = "https://api.gdc.cancer.gov/cases"
     PROJECTS_ENDPT = "https://api.gdc.cancer.gov/projects"
 
-    def __init__(self, project_id: str, file_dir: Path = None, cache_dir: Path = None):
-        self.project_id = project_id
-        self.file_dir = Path("/machine/ffs/datasets/tcga")  # "/project/incoming/tcga"
-        self.cache_dir = Path("/project/cache/tcga") / self.project_id
-        self.default_size = 1e7
+    def __init__(
+        self, file_dir: Path = None, cache_dir: Path = None, tcgaclient: TCGADownloader = None
+    ):
+        self.file_dir = Path("/project/incoming/tcga")  # "/machine/ffs/datasets/tcga")
+        self.cache_dir = Path("/project/cache/tcga")
+        self.max_records = 100000
+        self.download_client = tcgaclient if tcgaclient is not None else TCGADownloader()
+
+    def __repr__(self):
+        return f"TCGA(file_dir={self.file_dir}, cache_dir={self.cache_dir})"
+
+    def __str__(self):
+        return "TCGA"
+
+    def fetch_files(self, df_files: DataFrame) -> List[Job]:
+        self.__check_files_dataframe(df_files)
+        jobs = []
+        for project_id, df_files_project in df_files.groupby("project"):
+            for data_type, df_files_subset in df_files_project.groupby("data_type"):
+                outpath = self.file_dir / project_id / data_type
+                outpath.mkdir(parents=True, exist_ok=True)
+                available = self.check_available_files(outpath)
+                df_files_subset_missing = df_files_subset.loc[
+                    df_files_subset.index.difference(available)
+                ]
+                if not df_files_subset_missing.empty:
+                    manifest_file = outpath / "manifest.txt"
+                    manifest_job = ppg.FileGeneratingJob(
+                        manifest_file,
+                        wrap(self.write_manifest, df_files_subset_missing, manifest_file),
+                    )
+                    download_job = ppg.FileGeneratingJob(
+                        manifest_file.parent / "stdout.txt",
+                        wrap(self.download(manifest_file, outpath)),
+                    ).dependsd_on(manifest_job)
+                    jobs.extend([manifest_job, download_job])
+        return jobs
+
+    def __check_files_dataframe(self, df_files: DataFrame):
+        "Checks the dataframe columns"
+        missing_columns = set(["data_type", "project_id"]).difference(df_files.columns)
+        if missing_columns:
+            raise ValueError(
+                f"The fields {missing_columns} are not present in the files DataFrame. This is needed for creating the data path."
+            )
+        missing_columns = set(["file_id", "file_name", "md5sum", "file_size", "state"]).difference(
+            df_files.columns
+        )
+        if missing_columns:
+            raise ValueError(
+                "The following are needed for the manifest bt are missing: {missing_columns}."
+            )
+
+    def check_available_files(self, data_path: Path) -> List[str]:
+        """Checks data_path for already available file ids and returns them in a List. """
+        return [str(filename) for filename in data_path.iterdir() if filename.is_dir()]
+
+    def write_manifest(self, df_files: DataFrame, outfile: Path):
+        "Writes a manifest from a Dataframe."
+        df = df_files[["file_id", "file_name", "md5sum", "file_size", "state"]]
+        df = df.rename(columns={"file_id": "id", "file_name": "filename", "file_size": "size"})
+        df.to_csv(outfile, sep="\t", index=False)
+
+    def download(self, manifest: Path, outfolder: Path):
+        """
+        Starts the gdc client to download the files from a manifest.
+
+        Parameters
+        ----------
+        manifest : Path
+            Manifest file.
+        """
+        stdout = manifest.parent / "stdout.txt"
+        cmd = [self.download_client.gdc_client_command] + [
+            "download",
+            "-m",
+            str(manifest.absolute()),
+            "-d",
+            str(outfolder.absolute()),
+        ]
+        try:
+            with stdout.open("w") as outp:
+                subprocess.check_call(cmd, stdout=outp)
+        except subprocess.CalledProcessError:
+            print(" ".join(cmd))
+            raise ValueError()
 
     def make_params(
         self, filters: str = None, fields: str = None, expand: List[str] = None, size: int = None
@@ -175,4 +258,9 @@ class TCGAProject:
             )
         df = df.set_index("id")
         return df
+
+    def check_available_files(self, data_path: Path) -> List[str]:
+        """Checks data_path for already available file ids and returns them in a List. """
+        with data_path.open("r") as inp:
+            return [filename for filename in inp.iterdir()]
 
