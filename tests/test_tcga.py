@@ -1,32 +1,14 @@
-#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-"""tcga.py: Contains a helper class for TCGA data."""
+import pytest
 
-from pathlib import Path
-from typing import Optional, Callable, List, Dict, Tuple, Any, Union
-
-from numpy import iterable
-from pypipegraph2 import Job, FileGeneratingJob, SharedMultiFileGeneratingJob
-from pathlib import Path
-from pandas import DataFrame
-import pandas as pd
-import pypipegraph as ppg
-import zipfile
-import requests
-import tempfile
-import os
-import json
-import subprocess
-import shutil
-from .util import wrap_shared_multi, explode_and_join
-
-__author__ = "Marco Mernberger"
-__copyright__ = "Copyright (c) 2020 Marco Mernberger"
+__author__ = "MarcoMernberger"
+__copyright__ = "MarcoMernberger"
 __license__ = "mit"
 
 
-class TCGADownloader:
+def test_tcga_downloader():
+    tcga = TCGADownloader()
     """
     take care of file downloads.
     """
